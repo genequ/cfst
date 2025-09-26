@@ -42,21 +42,29 @@ class CFSTAutomation:
             
         try:
             # Run cfst.exe with basic parameters - use simpler parameters for faster testing
-            result = subprocess.run([
+            process = subprocess.Popen([
                 str(cfst_path),
                 # "-sl", "10",  # Download Speed
                 "-tl", "150",  # Latency limit
                 "-tp", "8443",  # Port to test
-            ], capture_output=True, text=True, encoding='utf-8', errors='ignore', cwd=Path(self.config["cfst_exe_path"]).parent)
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
+               text=True, encoding='utf-8', errors='ignore', 
+               cwd=Path(self.config["cfst_exe_path"]).parent)
             
-            if result.returncode == 0:
+            # Wait for the process to complete with a timeout
+            stdout, stderr = process.communicate(input='\n', timeout=300)
+            
+            if process.returncode == 0:
                 print("Cloudflare Speed Test completed successfully")
-                print(result.stdout)
+                print(stdout)
                 return True
             else:
-                print(f"Error running cfst.exe: {result.stderr}")
+                print(f"Error running cfst.exe: {stderr}")
                 return False
                 
+        except subprocess.TimeoutExpired:
+            print("Cloudflare Speed Test timed out after 5 minutes")
+            return False
         except Exception as e:
             print(f"Exception while running cfst.exe: {e}")
             return False
@@ -82,7 +90,7 @@ class CFSTAutomation:
             return False
     
     def modify_result_file(self):
-        """Modify result.csv to keep only the first 20 results"""
+        """Modify result.csv to append port 8443 after IP addresses and keep only the first 20 results"""
         result_path = Path(self.config["result_csv_path"])
         print(f"Checking if result file exists: {result_path}")
         if not result_path.exists():
@@ -96,19 +104,36 @@ class CFSTAutomation:
             
             print(f"Original file has {len(lines)} lines")
             
+            # Process each line to append port 8443 after IP addresses
+            modified_lines = []
+            for i, line in enumerate(lines):
+                if i == 0:  # Header line
+                    # Keep the original column name "IP 地址"
+                    modified_lines.append(line)
+                else:  # Data lines
+                    parts = line.split(',')
+                    if len(parts) > 0:
+                        # Append port 8443 to the IP address
+                        ip_address = parts[0].strip()
+                        if ip_address and not ip_address.startswith('#'):
+                            parts[0] = f"{ip_address}:8443"
+                        modified_line = ','.join(parts)
+                        modified_lines.append(modified_line)
+                    else:
+                        modified_lines.append(line)
+            
             # Keep header (first line) and first 20 data rows (lines 1-21)
-            if len(lines) > 21:  # Header + 20 data rows
-                lines = lines[:21]  # Keep first 21 lines (header + 20 results)
-                print(f"Modified result.csv to keep first 20 results (total lines: {len(lines)})")
+            if len(modified_lines) > 21:  # Header + 20 data rows
+                modified_lines = modified_lines[:21]  # Keep first 21 lines (header + 20 results)
+                print(f"Modified result.csv to keep first 20 results (total lines: {len(modified_lines)})")
             else:
-                print(f"Result file already has {len(lines)-1} results, no modification needed")
-                return True
+                print(f"Result file already has {len(modified_lines)-1} results, no modification needed")
             
             # Write back the modified content
             with open(result_path, 'w', encoding='utf-8') as file:
-                file.writelines(lines)
+                file.writelines(modified_lines)
             
-            print("Successfully modified result.csv")
+            print("Successfully modified result.csv - appended port 8443 to IP addresses")
             return True
             
         except Exception as e:
@@ -146,7 +171,7 @@ class CFSTAutomation:
             subprocess.run(["git", "commit", "-m", commit_message], 
                          cwd=repo_path, check=True)
             
-            # Push to remote
+            # Push to remote (upstream is now configured)
             push_result = subprocess.run(["git", "push"], 
                                        cwd=repo_path, capture_output=True, text=True)
             
