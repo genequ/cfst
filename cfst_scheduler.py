@@ -162,6 +162,14 @@ class CFSTAutomation:
                 print("Failed to modify result file, skipping Git operations")
                 return False
             
+            # Check if there are any changes to commit
+            status_result = subprocess.run(["git", "status", "--porcelain", self.config["result_csv_path"]], 
+                                         cwd=repo_path, capture_output=True, text=True)
+            
+            if not status_result.stdout.strip():
+                print("No changes to result.csv, skipping Git operations")
+                return True
+            
             # Add the result file
             subprocess.run(["git", "add", self.config["result_csv_path"]], 
                          cwd=repo_path, check=True)
@@ -171,17 +179,32 @@ class CFSTAutomation:
             subprocess.run(["git", "commit", "-m", commit_message], 
                          cwd=repo_path, check=True)
             
-            # Push to remote (upstream is now configured)
+            # Try to push with auto-setup remote
             push_result = subprocess.run(["git", "push"], 
-                                       cwd=repo_path, capture_output=True, text=True)
+                                       cwd=repo_path, capture_output=True, text=True, timeout=60)
             
             if push_result.returncode == 0:
                 print("Successfully pushed to GitHub")
                 return True
             else:
+                # If push fails due to upstream not set, try with --set-upstream
+                if "no upstream branch" in push_result.stderr or "set-upstream" in push_result.stderr:
+                    print("Setting upstream branch and retrying push...")
+                    push_result = subprocess.run(["git", "push", "--set-upstream", "genequ", "main"], 
+                                               cwd=repo_path, capture_output=True, text=True, timeout=60)
+                    
+                    if push_result.returncode == 0:
+                        print("Successfully pushed to GitHub with upstream configured")
+                        return True
+                
                 print(f"Git push failed: {push_result.stderr}")
+                print("Git commit was successful, but push failed. The commit will be available for manual push later.")
                 return False
                 
+        except subprocess.TimeoutExpired:
+            print("Git push timed out after 60 seconds. Network may be unavailable.")
+            print("Git commit was successful, but push failed. The commit will be available for manual push later.")
+            return False
         except subprocess.CalledProcessError as e:
             print(f"Git operation failed: {e}")
             return False
