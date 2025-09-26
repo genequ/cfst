@@ -44,12 +44,10 @@ class CFSTAutomation:
             # Run cfst.exe with basic parameters - use simpler parameters for faster testing
             result = subprocess.run([
                 str(cfst_path),
-                "-n", "10",   # Number of threads (reduced for faster testing)
-                "-t", "1",    # Number of tests per IP (reduced for faster testing)
-                "-dn", "2",   # Number of IPs to test download speed (reduced for faster testing)
-                "-dt", "2",   # Download test duration (reduced for faster testing)
-                "-p", "5"     # Show top 5 results (reduced for faster testing)
-            ], capture_output=True, text=True, cwd=Path(self.config["cfst_exe_path"]).parent)
+                # "-sl", "10",  # Download Speed
+                "-tl", "150",  # Latency limit
+                "-tp", "8443",  # Port to test
+            ], capture_output=True, text=True, encoding='utf-8', errors='ignore', cwd=Path(self.config["cfst_exe_path"]).parent)
             
             if result.returncode == 0:
                 print("Cloudflare Speed Test completed successfully")
