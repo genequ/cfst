@@ -2,7 +2,7 @@
 """
 Cloudflare Speed Test Scheduler
 Automatically runs cfst.exe every 12 hours and pushes results to GitHub
-重构版本 - 使用独立的GitHub上传器
+重构版本 - 集成GitHub上传功能，推送到genequ/csft仓库
 """
 
 import os
@@ -13,12 +13,6 @@ import datetime
 import json
 from pathlib import Path
 
-# Import the new GitHub uploader
-try:
-    from github_uploader import GitHubUploader
-except ImportError:
-    print("Warning: github_uploader.py not found. GitHub upload functionality will be disabled.")
-
 # Configuration
 CONFIG = {
     "cfst_exe_path": r"cfst.exe",
@@ -26,35 +20,210 @@ CONFIG = {
     "git_repo_path": ".",
     "schedule_interval_hours": 12,
     "backup_folder": "cfst_backups",
-    "git_remote": "genequ",
-    "git_branch": "main"
+    "git_remote": "cfst",
+    "git_branch": "main",
+    "git_repo_url": "https://github.com/genequ/cfst.git"
 }
+
+class GitHubUploader:
+    """集成GitHub上传功能"""
+    def __init__(self, repo_path=".", result_file="result.csv", remote_name="cfst", branch="main", repo_url="https://github.com/genequ/cfst.git"):
+        self.repo_path = Path(repo_path)
+        self.result_file = result_file
+        self.remote_name = remote_name
+        self.branch = branch
+        self.repo_url = repo_url
+        
+    def check_git_availability(self):
+        """检查Git是否可用"""
+        try:
+            result = subprocess.run(["git", "--version"], 
+                                  capture_output=True, text=True, check=True)
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("Git is not available or not installed")
+            return False
+    
+    def setup_git_repository(self):
+        """设置Git仓库"""
+        if not self.is_git_repository():
+            print("Initializing new Git repository...")
+            subprocess.run(["git", "init"], cwd=self.repo_path, check=True)
+        
+        # 添加远程仓库
+        try:
+            subprocess.run(["git", "remote", "add", self.remote_name, self.repo_url], 
+                         cwd=self.repo_path, capture_output=True, check=True)
+            print(f"Added remote repository: {self.remote_name} -> {self.repo_url}")
+        except subprocess.CalledProcessError:
+            # 如果远程已存在，更新URL
+            subprocess.run(["git", "remote", "set-url", self.remote_name, self.repo_url], 
+                         cwd=self.repo_path, check=True)
+            print(f"Updated remote repository: {self.remote_name} -> {self.repo_url}")
+    
+    def is_git_repository(self):
+        """检查当前目录是否为Git仓库"""
+        return (self.repo_path / ".git").exists()
+    
+    def check_result_file_exists(self):
+        """检查result.csv文件是否存在"""
+        result_path = self.repo_path / self.result_file
+        if not result_path.exists():
+            print(f"Error: {self.result_file} not found at {result_path}")
+            return False
+        return True
+    
+    def has_changes_to_commit(self):
+        """检查是否有需要提交的更改"""
+        try:
+            result = subprocess.run(
+                ["git", "status", "--porcelain", self.result_file],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            return bool(result.stdout.strip())
+        except subprocess.CalledProcessError as e:
+            print(f"Error checking git status: {e}")
+            return False
+    
+    def git_add(self):
+        """添加文件到Git暂存区"""
+        try:
+            subprocess.run(
+                ["git", "add", self.result_file],
+                cwd=self.repo_path,
+                check=True
+            )
+            print(f"Added {self.result_file} to git staging area")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Error adding file to git: {e}")
+            return False
+    
+    def git_commit(self):
+        """提交更改"""
+        try:
+            commit_message = f"CFST results update {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            subprocess.run(
+                ["git", "commit", "-m", commit_message],
+                cwd=self.repo_path,
+                check=True
+            )
+            print(f"Committed changes: {commit_message}")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Error committing changes: {e}")
+            return False
+    
+    def git_push(self):
+        """推送到远程仓库"""
+        max_retries = 3
+        retry_delay = 5  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"Attempting git push (attempt {attempt + 1}/{max_retries})...")
+                result = subprocess.run(
+                    ["git", "push", self.remote_name, self.branch],
+                    cwd=self.repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=120  # 2分钟超时
+                )
+                
+                if result.returncode == 0:
+                    print("Successfully pushed to GitHub")
+                    return True
+                else:
+                    # 检查是否需要设置上游分支
+                    if "no upstream branch" in result.stderr or "set-upstream" in result.stderr:
+                        print("Setting upstream branch...")
+                        setup_result = subprocess.run(
+                            ["git", "push", "--set-upstream", self.remote_name, self.branch],
+                            cwd=self.repo_path,
+                            capture_output=True,
+                            text=True,
+                            timeout=120
+                        )
+                        if setup_result.returncode == 0:
+                            print("Successfully pushed to GitHub with upstream configured")
+                            return True
+                    
+                    print(f"Git push failed (attempt {attempt + 1}): {result.stderr}")
+                    
+                    if attempt < max_retries - 1:
+                        print(f"Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # 指数退避
+                    
+            except subprocess.TimeoutExpired:
+                print(f"Git push timed out (attempt {attempt + 1})")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+            
+            except Exception as e:
+                print(f"Unexpected error during git push (attempt {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+        
+        print("All git push attempts failed")
+        return False
+    
+    def upload_to_github(self):
+        """主上传方法 - 完整的GitHub上传流程"""
+        print(f"\n=== Starting GitHub Upload Process at {datetime.datetime.now()} ===")
+        
+        # 1. 检查前置条件
+        if not self.check_git_availability():
+            return False
+        
+        # 2. 设置Git仓库
+        self.setup_git_repository()
+        
+        if not self.check_result_file_exists():
+            return False
+        
+        # 3. 检查是否有更改需要提交
+        if not self.has_changes_to_commit():
+            print("No changes to result.csv. Skipping upload.")
+            return True
+        
+        # 4. 执行Git操作
+        if not self.git_add():
+            return False
+        
+        if not self.git_commit():
+            return False
+        
+        if not self.git_push():
+            print("Git push failed, but commit was successful. Manual push may be needed later.")
+            return False
+        
+        print("=== GitHub Upload Process Completed Successfully ===\n")
+        return True
 
 class CFSTAutomation:
     def __init__(self, config):
         self.config = config
-        self.github_uploader = None
+        self.github_uploader = GitHubUploader(
+            repo_path=self.config["git_repo_path"],
+            result_file=self.config["result_csv_path"],
+            remote_name=self.config["git_remote"],
+            branch=self.config["git_branch"],
+            repo_url=self.config["git_repo_url"]
+        )
         self.setup_directories()
-        self.setup_github_uploader()
         
     def setup_directories(self):
         """Create necessary directories"""
         backup_dir = Path(self.config["backup_folder"])
         backup_dir.mkdir(exist_ok=True)
-        
-    def setup_github_uploader(self):
-        """Initialize GitHub uploader"""
-        try:
-            self.github_uploader = GitHubUploader(
-                repo_path=self.config["git_repo_path"],
-                result_file=self.config["result_csv_path"],
-                remote_name=self.config["git_remote"],
-                branch=self.config["git_branch"]
-            )
-            print("GitHub uploader initialized successfully")
-        except Exception as e:
-            print(f"Warning: Failed to initialize GitHub uploader: {e}")
-            self.github_uploader = None
         
     def run_cfst_test(self):
         """Run the Cloudflare Speed Test"""
@@ -166,90 +335,18 @@ class CFSTAutomation:
             return False
     
     def git_operations(self):
-        """Perform Git operations using the new GitHub uploader"""
-        if self.github_uploader is None:
-            print("GitHub uploader not available. Using fallback method.")
-            return self.git_operations_fallback()
-        
+        """Perform Git operations using the integrated GitHub uploader"""
         try:
             # Modify result file before Git operations
             if not self.modify_result_file():
                 print("Failed to modify result file, skipping Git operations")
                 return False
             
-            # Use the new GitHub uploader
+            # Use the integrated GitHub uploader
             return self.github_uploader.upload_to_github()
             
         except Exception as e:
             print(f"Error during GitHub upload: {e}")
-            print("Falling back to original Git operations method")
-            return self.git_operations_fallback()
-    
-    def git_operations_fallback(self):
-        """Fallback Git operations method (original implementation)"""
-        repo_path = Path(self.config["git_repo_path"])
-        
-        # Check if this is a git repository
-        if not (repo_path / ".git").exists():
-            print("Not a Git repository. Git operations skipped.")
-            return False
-            
-        try:
-            # Check if git is available
-            subprocess.run(["git", "--version"], capture_output=True, check=True)
-        except:
-            print("Git is not available. Git operations skipped.")
-            return False
-            
-        try:
-            # Check if there are any changes to commit
-            status_result = subprocess.run(["git", "status", "--porcelain", self.config["result_csv_path"]], 
-                                         cwd=repo_path, capture_output=True, text=True)
-            
-            if not status_result.stdout.strip():
-                print("No changes to result.csv, skipping Git operations")
-                return True
-            
-            # Add the result file
-            subprocess.run(["git", "add", self.config["result_csv_path"]], 
-                         cwd=repo_path, check=True)
-            
-            # Commit with timestamp
-            commit_message = f"CFST results {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            subprocess.run(["git", "commit", "-m", commit_message], 
-                         cwd=repo_path, check=True)
-            
-            # Try to push with auto-setup remote
-            push_result = subprocess.run(["git", "push"], 
-                                       cwd=repo_path, capture_output=True, text=True, timeout=60)
-            
-            if push_result.returncode == 0:
-                print("Successfully pushed to GitHub")
-                return True
-            else:
-                # If push fails due to upstream not set, try with --set-upstream
-                if "no upstream branch" in push_result.stderr or "set-upstream" in push_result.stderr:
-                    print("Setting upstream branch and retrying push...")
-                    push_result = subprocess.run(["git", "push", "--set-upstream", "genequ", "main"], 
-                                               cwd=repo_path, capture_output=True, text=True, timeout=60)
-                    
-                    if push_result.returncode == 0:
-                        print("Successfully pushed to GitHub with upstream configured")
-                        return True
-                
-                print(f"Git push failed: {push_result.stderr}")
-                print("Git commit was successful, but push failed. The commit will be available for manual push later.")
-                return False
-                
-        except subprocess.TimeoutExpired:
-            print("Git push timed out after 60 seconds. Network may be unavailable.")
-            print("Git commit was successful, but push failed. The commit will be available for manual push later.")
-            return False
-        except subprocess.CalledProcessError as e:
-            print(f"Git operation failed: {e}")
-            return False
-        except Exception as e:
-            print(f"Error during Git operations: {e}")
             return False
     
     def run_single_cycle(self):
