@@ -284,7 +284,7 @@ class CFSTAutomation:
             return False
     
     def modify_result_file(self):
-        """Modify result.csv to append port 8443 after IP addresses and keep only the first 20 results"""
+        """Modify result.csv to keep only the first 20 results (without appending port)"""
         result_path = Path(self.config["result_csv_path"])
         print(f"Checking if result file exists: {result_path}")
         if not result_path.exists():
@@ -298,36 +298,19 @@ class CFSTAutomation:
             
             print(f"Original file has {len(lines)} lines")
             
-            # Process each line to append port 8443 after IP addresses
-            modified_lines = []
-            for i, line in enumerate(lines):
-                if i == 0:  # Header line
-                    # Keep the original column name "IP 地址"
-                    modified_lines.append(line)
-                else:  # Data lines
-                    parts = line.split(',')
-                    if len(parts) > 0:
-                        # Append port 8443 to the IP address
-                        ip_address = parts[0].strip()
-                        if ip_address and not ip_address.startswith('#'):
-                            parts[0] = f"{ip_address}:8443"
-                        modified_line = ','.join(parts)
-                        modified_lines.append(modified_line)
-                    else:
-                        modified_lines.append(line)
-            
             # Keep header (first line) and first 20 data rows (lines 1-21)
-            if len(modified_lines) > 21:  # Header + 20 data rows
-                modified_lines = modified_lines[:21]  # Keep first 21 lines (header + 20 results)
+            if len(lines) > 21:  # Header + 20 data rows
+                modified_lines = lines[:21]  # Keep first 21 lines (header + 20 results)
                 print(f"Modified result.csv to keep first 20 results (total lines: {len(modified_lines)})")
             else:
+                modified_lines = lines
                 print(f"Result file already has {len(modified_lines)-1} results, no modification needed")
             
             # Write back the modified content
             with open(result_path, 'w', encoding='utf-8') as file:
                 file.writelines(modified_lines)
             
-            print("Successfully modified result.csv - appended port 8443 to IP addresses")
+            print("Successfully modified result.csv - kept first 20 results")
             return True
             
         except Exception as e:
