@@ -9,7 +9,7 @@ REM Change to script directory
 cd /d "%~dp0"
 
 REM Run the Python scheduler with --run-once flag
-python cfst_scheduler.py --run-once
+python cfst_scheduler.py --schedule
 
 if %errorlevel% equ 0 (
     echo.

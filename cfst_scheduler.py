@@ -22,7 +22,10 @@ CONFIG = {
     "backup_folder": "cfst_backups",
     "git_remote": "cfst",
     "git_branch": "main",
-    "git_repo_url": "https://github.com/genequ/cfst.git"
+    "git_repo_url": "https://github.com/genequ/cfst.git",
+    "test_port": 2053,  # 测试端口号
+    "max_results_to_keep": 10,  # 保留的最大结果数量
+    "test_url": "http://speedtest.120529.xyz"  # 用于测试的URL
 }
 
 class GitHubUploader:
@@ -222,8 +225,8 @@ class CFSTAutomation:
         
     def setup_directories(self):
         """Create necessary directories"""
-        backup_dir = Path(self.config["backup_folder"])
-        backup_dir.mkdir(exist_ok=True)
+        # No backup directory needed since backup functionality has been removed
+        pass
         
     def run_cfst_test(self):
         """Run the Cloudflare Speed Test"""
@@ -240,7 +243,8 @@ class CFSTAutomation:
                 str(cfst_path),
                 # "-sl", "10",  # Download Speed
                 "-tl", "150",  # Latency limit
-                "-tp", "8443",  # Port to test
+                "-tp", str(self.config["test_port"]),
+                "-url", self.config["test_url"]  # URL to test
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
                text=True, encoding='utf-8', errors='ignore', 
                cwd=Path(self.config["cfst_exe_path"]).parent)
@@ -263,28 +267,9 @@ class CFSTAutomation:
             print(f"Exception while running cfst.exe: {e}")
             return False
     
-    def backup_result_file(self):
-        """Create a timestamped backup of the result file"""
-        result_path = Path(self.config["result_csv_path"])
-        if not result_path.exists():
-            print("No result.csv file found to backup")
-            return False
-            
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"result_{timestamp}.csv"
-        backup_path = Path(self.config["backup_folder"]) / backup_name
-        
-        try:
-            import shutil
-            shutil.copy2(result_path, backup_path)
-            print(f"Backup created: {backup_path}")
-            return True
-        except Exception as e:
-            print(f"Error creating backup: {e}")
-            return False
     
     def modify_result_file(self):
-        """Modify result.csv to keep only the first 20 results (without appending port)"""
+        """Modify result.csv to keep only the first N results (without appending port)"""
         result_path = Path(self.config["result_csv_path"])
         print(f"Checking if result file exists: {result_path}")
         if not result_path.exists():
@@ -298,10 +283,13 @@ class CFSTAutomation:
             
             print(f"Original file has {len(lines)} lines")
             
-            # Keep header (first line) and first 20 data rows (lines 1-21)
-            if len(lines) > 21:  # Header + 20 data rows
-                modified_lines = lines[:21]  # Keep first 21 lines (header + 20 results)
-                print(f"Modified result.csv to keep first 20 results (total lines: {len(modified_lines)})")
+            # Calculate the number of lines to keep (header + max_results_to_keep)
+            lines_to_keep = self.config["max_results_to_keep"] + 1  # Header + data rows
+            
+            # Keep header (first line) and first N data rows
+            if len(lines) > lines_to_keep:
+                modified_lines = lines[:lines_to_keep]  # Keep first N+1 lines (header + N results)
+                print(f"Modified result.csv to keep first {self.config['max_results_to_keep']} results (total lines: {len(modified_lines)})")
             else:
                 modified_lines = lines
                 print(f"Result file already has {len(modified_lines)-1} results, no modification needed")
@@ -310,7 +298,7 @@ class CFSTAutomation:
             with open(result_path, 'w', encoding='utf-8') as file:
                 file.writelines(modified_lines)
             
-            print("Successfully modified result.csv - kept first 20 results")
+            print(f"Successfully modified result.csv - kept first {self.config['max_results_to_keep']} results")
             return True
             
         except Exception as e:
@@ -332,19 +320,76 @@ class CFSTAutomation:
             print(f"Error during GitHub upload: {e}")
             return False
     
-    def run_single_cycle(self):
-        """Run one complete cycle of testing and Git operations"""
+    def check_result_count(self):
+        """检查result.csv中的结果数量，返回结果行数（不包括标题）"""
+        result_path = Path(self.config["result_csv_path"])
+        if not result_path.exists():
+            print("result.csv file not found")
+            return 0
+            
+        try:
+            with open(result_path, 'r', encoding='utf-8') as file:
+                lines = file.readlines()
+            
+            # 减去标题行，返回实际结果数量
+            result_count = len(lines) - 1 if len(lines) > 0 else 0
+            print(f"Current result count: {result_count}")
+            return result_count
+            
+        except Exception as e:
+            print(f"Error reading result.csv: {e}")
+            return 0
+    
+    def run_single_cycle(self, skip_result_check=False):
+        """Run one complete cycle of testing and Git operations
+        
+        Args:
+            skip_result_check (bool): If True, skip checking result count and directly run cfst test
+        """
         print(f"\n=== CFST Automation Cycle Started at {datetime.datetime.now()} ===")
         
-        # Run the speed test
-        if not self.run_cfst_test():
-            print("Speed test failed, skipping Git operations")
-            return False
+        if skip_result_check:
+            print("Skipping result count check, directly running cfst test...")
             
-        # Backup the result file
-        self.backup_result_file()
-        
-        # Perform Git operations
+            # Run the speed test
+            if not self.run_cfst_test():
+                print("Speed test failed, skipping Git operations")
+                return False
+        else:
+            # 检查当前结果数量
+            current_count = self.check_result_count()
+            
+            # 如果结果少于配置的最大数量，重新运行cfst测试
+            if current_count < self.config["max_results_to_keep"]:
+                print(f"Only {current_count} results found (less than {self.config['max_results_to_keep']}), running cfst test...")
+                
+                # Run the speed test
+                if not self.run_cfst_test():
+                    print("Speed test failed, skipping Git operations")
+                    return False
+                    
+                # 再次检查结果数量
+                new_count = self.check_result_count()
+                print(f"After cfst test, result count: {new_count}")
+                
+                # 如果仍然少于配置的最大数量，可能需要多次运行
+                retry_count = 0
+                max_retries = 3
+                
+                while new_count < self.config["max_results_to_keep"] and retry_count < max_retries:
+                    retry_count += 1
+                    print(f"Still only {new_count} results, retrying cfst test (attempt {retry_count}/{max_retries})...")
+                    
+                    if not self.run_cfst_test():
+                        print(f"Speed test failed on retry {retry_count}")
+                        break
+                        
+                    new_count = self.check_result_count()
+                    print(f"After retry {retry_count}, result count: {new_count}")
+            else:
+                print(f"Sufficient results found ({current_count}), proceeding with Git operations")
+            
+        # Perform Git operations (no backup needed, directly modify result)
         git_success = self.git_operations()
         
         print(f"=== CFST Automation Cycle Completed at {datetime.datetime.now()} ===\n")
@@ -383,13 +428,15 @@ def main():
                        help="Run one cycle and exit")
     parser.add_argument("--schedule", action="store_true",
                        help="Run on a 12-hour schedule (default)")
+    parser.add_argument("--skip-check", action="store_true",
+                       help="Skip result count check and directly run cfst test")
     
     args = parser.parse_args()
     
     automation = CFSTAutomation(CONFIG)
     
     if args.run_once:
-        automation.run_single_cycle()
+        automation.run_single_cycle(skip_result_check=args.skip_check)
     else:
         automation.run_scheduled()
 
